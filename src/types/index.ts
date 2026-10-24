@@ -35,7 +35,7 @@ export type UserRole = 'Super Admin' | 'Department Officer' | 'Field Agent';
 
 // Valid status transitions (enforced in the UI)
 export const STATUS_TRANSITIONS: Record<ComplaintStatus, ComplaintStatus[]> = {
-  New: ['Acknowledged', 'Rejected', 'Duplicate'],
+  New: ['Acknowledged', 'Assigned', 'Rejected', 'Duplicate'],
   Acknowledged: ['Assigned', 'Rejected', 'Duplicate'],
   Assigned: ['In Progress', 'Rejected', 'Duplicate'],
   'In Progress': ['Resolved', 'Rejected'],
@@ -45,10 +45,23 @@ export const STATUS_TRANSITIONS: Record<ComplaintStatus, ComplaintStatus[]> = {
   Duplicate: [],
 };
 
+// Authoritative Spring Boot backend state transitions:
+// REPORTED -> ASSIGNED -> IN_PROGRESS -> RESOLVED -> CLOSED
+export const BACKEND_STATUS_TRANSITIONS: Record<ComplaintStatus, ComplaintStatus[]> = {
+  New: ['Assigned', 'In Progress'],
+  Acknowledged: ['Assigned', 'In Progress'],
+  Assigned: ['In Progress'],
+  'In Progress': ['Resolved'],
+  Resolved: ['Closed'],
+  Closed: [],
+  Rejected: [],
+  Duplicate: [],
+};
+
 export interface GeoLocation {
   address: string;
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
 }
 
 export interface Evidence {
@@ -88,6 +101,67 @@ export interface Complaint {
   evidence: Evidence[];
   timeline: TimelineEntry[];
   tags?: string[];        // additional keyword tags for similarity matching
+  rawBackendDto?: BackendComplaintDto; // original Spring Boot DTO if loaded from backend
+  isBackendRecord?: boolean;
+}
+
+// ──────────────────────────────────────────────
+// Backend Integration Types (Spring Boot REST API)
+// ──────────────────────────────────────────────
+
+export type BackendRole = 'CITIZEN' | 'WORKER' | 'ADMIN';
+
+export type BackendComplaintCategory = 'WASTE' | 'ROADS' | 'STREETLIGHTS' | 'OTHER';
+
+export type BackendComplaintStatus = 'REPORTED' | 'ASSIGNED' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED';
+
+export interface BackendComplaintDto {
+  id: number | string;
+  title: string;
+  description: string;
+  category: BackendComplaintCategory | string;
+  status: BackendComplaintStatus | string;
+  latitude: number | null;
+  longitude: number | null;
+  beforeImageUrl?: string | null;
+  afterImageUrl?: string | null;
+  departmentName?: string | null;
+  reporterName?: string | null;
+  reporterEmail?: string | null;
+  parentComplaintId?: number | string | null;
+  duplicates?: Array<BackendComplaintDto | number | string>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface BackendLoginResponse {
+  token: string;
+  email: string;
+  role: BackendRole;
+}
+
+export interface PresignedUrlRequest {
+  folder: 'before' | 'after';
+  contentType: string;
+  filename?: string;
+}
+
+export interface PresignedUrlResponse {
+  uploadUrl: string;
+  fileUrl: string;
+  objectKey: string;
+  expiresInSeconds: number;
+}
+
+export interface BackendPage<T> {
+  content: T[];
+  totalElements: number;
+  totalPages: number;
+  size: number;
+  number: number;
+  first?: boolean;
+  last?: boolean;
+  empty?: boolean;
 }
 
 // ──────────────────────────────────────────────
@@ -101,6 +175,8 @@ export interface User {
   role: UserRole;
   department?: Department;  // scoped for Department Officer / Field Agent
   avatarInitials: string;
+  token?: string;           // JWT bearer token for live backend requests
+  backendRole?: BackendRole;
 }
 
 export interface AuthState {

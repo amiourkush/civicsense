@@ -29,6 +29,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const loggedIn = await apiLogin(email, password);
       setUser(loggedIn);
       sessionStorage.setItem('civicsense_user', JSON.stringify(loggedIn));
+      if (loggedIn.token) {
+        sessionStorage.setItem('civicsense_jwt', loggedIn.token);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
       throw err;
@@ -41,6 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await apiLogout();
     setUser(null);
     sessionStorage.removeItem('civicsense_user');
+    sessionStorage.removeItem('civicsense_jwt');
   }, []);
 
   return (

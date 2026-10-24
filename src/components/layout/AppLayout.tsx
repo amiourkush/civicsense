@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   LayoutDashboard, ClipboardList, BarChart3,
-  LogOut, ChevronLeft, Menu, X, Bell, Shield
+  LogOut, ChevronLeft, Menu, X, Shield
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { cn } from '../../lib/utils';
@@ -157,10 +157,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
           {/* Right actions */}
           <div className="flex items-center gap-2">
-            <button className="relative w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500 flex items-center justify-center">
-              <Bell size={16} />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
-            </button>
             {/* Role chip */}
             <div className="hidden sm:flex items-center gap-1.5 bg-govblue-50 border border-govblue-200 rounded-full px-3 py-1">
               <div className="w-5 h-5 rounded-full bg-govblue-600 flex items-center justify-center text-[9px] font-bold text-white">

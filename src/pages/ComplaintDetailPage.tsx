@@ -8,7 +8,8 @@ import {
 } from 'lucide-react';
 import {
   getComplaintById, getComplaints, updateComplaintStatus,
-  assignComplaint, addEvidence, mergeComplaint, getUsers
+  assignComplaint, addEvidence, mergeComplaint, getUsers,
+  getPresignedUrl, uploadFileToS3, isMockMode
 } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardHeader, CardBody, Button, Input, Select, Textarea, Spinner } from '../components/ui';
@@ -16,7 +17,7 @@ import { StatusBadge, PriorityBadge, OverdueBadge, CategoryBadge } from '../comp
 import { formatDate, formatDateTime, formatRelative, isOverdue } from '../lib/utils';
 import { classifyText, autoRouteDepartment } from '../lib/classifier';
 import { findDuplicates } from '../lib/similarity';
-import { STATUS_TRANSITIONS } from '../types';
+import { STATUS_TRANSITIONS, BACKEND_STATUS_TRANSITIONS } from '../types';
 import type { ComplaintStatus, ComplaintCategory, Department, Evidence } from '../types';
 
 export function ComplaintDetailPage() {
@@ -32,6 +33,10 @@ export function ComplaintDetailPage() {
   const [targetStatus, setTargetStatus] = useState<ComplaintStatus | ''>('');
   const [statusNote, setStatusNote] = useState('');
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [resolutionFile, setResolutionFile] = useState<File | null>(null);
+  const [resolutionPreview, setResolutionPreview] = useState<string>('');
+  const [uploadStep, setUploadStep] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   // Assignment state
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -88,11 +93,45 @@ export function ComplaintDetailPage() {
     return users.filter((u) => u.department === assignDept);
   }, [users, assignDept]);
 
-  // Status mutation
+  // Status mutation with direct S3 upload pipeline for RESOLVED state
   const statusMutation = useMutation({
-    mutationFn: async ({ status, note }: { status: ComplaintStatus; note?: string }) => {
+    mutationFn: async ({
+      status,
+      note,
+      file,
+    }: {
+      status: ComplaintStatus;
+      note?: string;
+      file?: File | null;
+    }) => {
       if (!complaint || !user) return;
-      return updateComplaintStatus(complaint.id, status, user.name, note);
+      setStatusError(null);
+
+      let finalAfterUrl: string | undefined = undefined;
+
+      // Transition to RESOLVED strictly requires an after-image URL
+      if (status === 'Resolved') {
+        if (file) {
+          setUploadStep('Requesting S3 presigned upload URL...');
+          const presigned = await getPresignedUrl('after', file.type, file.name);
+          setUploadStep('Uploading resolution photo directly to S3...');
+          await uploadFileToS3(presigned.uploadUrl, file);
+          finalAfterUrl = presigned.fileUrl;
+        } else {
+          // Check if an after image was already attached
+          const existingAfter = complaint.evidence.find((e) => e.phase === 'after' && e.url);
+          if (existingAfter?.url) {
+            finalAfterUrl = existingAfter.url;
+          } else if (!isMockMode) {
+            throw new Error(
+              'The backend strictly requires an after-resolution image before marking this complaint as RESOLVED.'
+            );
+          }
+        }
+      }
+
+      setUploadStep('Updating complaint status on server...');
+      return updateComplaintStatus(complaint.id, status, user.name, note, finalAfterUrl);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
@@ -100,6 +139,14 @@ export function ComplaintDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['analytics'] });
       setShowStatusModal(false);
       setStatusNote('');
+      setResolutionFile(null);
+      setResolutionPreview('');
+      setUploadStep(null);
+      setStatusError(null);
+    },
+    onError: (err: any) => {
+      setUploadStep(null);
+      setStatusError(err?.message || 'Failed to update complaint status.');
     },
   });
 
@@ -161,33 +208,54 @@ export function ComplaintDetailPage() {
 
   if (isError || !complaint) {
     return (
-      <div className="py-16 text-center">
+      <div className="py-16 text-center max-w-md mx-auto">
         <AlertTriangle className="mx-auto text-amber-500 mb-3" size={36} />
-        <h2 className="text-xl font-bold text-slate-800">Complaint Not Found</h2>
+        <h2 className="text-xl font-bold text-slate-800">Failed to Load Complaint</h2>
         <p className="text-sm text-slate-500 mt-1">
-          Complaint "{id}" does not exist or may have been deleted.
+          Unable to retrieve complaint "{id}". Check backend availability or verify that the complaint ID exists.
         </p>
-        <Link to="/complaints">
-          <Button variant="outline" size="sm" className="mt-4">
-            Back to Queue
-          </Button>
-        </Link>
+        <div className="flex items-center justify-center gap-3 mt-4">
+          <Link to="/complaints">
+            <Button variant="secondary" size="sm">
+              Back to Queue
+            </Button>
+          </Link>
+        </div>
       </div>
     );
   }
 
   const overdue = isOverdue(complaint.dueDate, complaint.status);
-  const allowedTransitions = STATUS_TRANSITIONS[complaint.status] || [];
+  const allowedTransitions = isMockMode
+    ? (STATUS_TRANSITIONS[complaint.status] || [])
+    : (BACKEND_STATUS_TRANSITIONS[complaint.status] || []);
 
   // Resolution proof check
-  const hasResolutionProof = complaint.evidence.some(
-    (e) => e.phase === 'after' || e.type === 'image'
+  const hasResolutionProof = Boolean(
+    complaint.evidence.some((e) => e.phase === 'after' || (e.type === 'image' && e.url)) ||
+    resolutionFile
   );
 
   const handleStatusChangeClick = (status: ComplaintStatus) => {
     setTargetStatus(status);
     setStatusNote('');
+    setResolutionFile(null);
+    setResolutionPreview('');
+    setStatusError(null);
+    setUploadStep(null);
     setShowStatusModal(true);
+  };
+
+  const handleResolutionFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setResolutionFile(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setResolutionPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -302,7 +370,9 @@ export function ComplaintDetailPage() {
                     <span>{complaint.location.address}</span>
                   </div>
                   <span className="text-[11px] font-mono text-slate-400">
-                    {complaint.location.lat.toFixed(4)}, {complaint.location.lng.toFixed(4)}
+                    {complaint.location.lat != null && complaint.location.lng != null
+                      ? `${complaint.location.lat.toFixed(4)}, ${complaint.location.lng.toFixed(4)}`
+                      : 'Coordinates pending'}
                   </span>
                 </div>
 
@@ -648,17 +718,26 @@ export function ComplaintDetailPage() {
                                 </Button>
                               </Link>
 
-                              <Button
-                                size="sm"
-                                variant="primary"
-                                onClick={() => {
-                                  setMergeTargetPrimaryId(target.id);
-                                  setShowMergeModal(true);
-                                }}
-                                leftIcon={<GitMerge size={13} />}
-                              >
-                                Merge into {target.id}
-                              </Button>
+                              {isMockMode ? (
+                                <Button
+                                  size="sm"
+                                  variant="primary"
+                                  onClick={() => {
+                                    setMergeTargetPrimaryId(target.id);
+                                    setShowMergeModal(true);
+                                  }}
+                                  leftIcon={<GitMerge size={13} />}
+                                >
+                                  Merge into {target.id}
+                                </Button>
+                              ) : (
+                                <span
+                                  className="text-[11px] font-medium text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-1.5 rounded-lg text-center"
+                                  title="Intake deduplication is executed automatically by the backend within a 50m radius upon submission."
+                                >
+                                  Backend Auto-Deduped (50m)
+                                </span>
+                              )}
                             </div>
                           </div>
                         );
@@ -680,17 +759,26 @@ export function ComplaintDetailPage() {
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
                   Department & Routing
                 </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setAssignDept(complaint.assignedDepartment || 'Sanitation');
-                    setAssignOfficer(complaint.assignedOfficer || '');
-                    setShowAssignModal(true);
-                  }}
-                >
-                  Reassign
-                </Button>
+                {isMockMode ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setAssignDept(complaint.assignedDepartment || 'Sanitation');
+                      setAssignOfficer(complaint.assignedOfficer || '');
+                      setShowAssignModal(true);
+                    }}
+                  >
+                    Reassign
+                  </Button>
+                ) : (
+                  <span
+                    className="text-[11px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded"
+                    title="Departments are auto-routed by the Spring Boot backend upon intake. Manual reassignment endpoint is not supported by API."
+                  >
+                    Auto-Assigned by Server
+                  </span>
+                )}
               </div>
             </CardHeader>
 
@@ -820,12 +908,57 @@ export function ComplaintDetailPage() {
               </button>
             </div>
 
-            {targetStatus === 'Resolved' && !hasResolutionProof && (
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
-                <AlertTriangle size={16} className="shrink-0 text-amber-600 mt-0.5" />
-                <span>
-                  <strong>Notice:</strong> High-integrity resolution policy recommends attaching verification photo or repair note evidence under the Evidence tab before closing this ticket.
-                </span>
+            {targetStatus === 'Resolved' && (
+              <div className="space-y-3 p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-lg text-xs">
+                <div className="flex items-center gap-1.5 font-bold text-emerald-900">
+                  <Camera size={15} />
+                  <span>After-Resolution Verification Proof {!isMockMode && <span className="text-red-500 font-bold">*</span>}</span>
+                </div>
+                <p className="text-emerald-800 leading-relaxed">
+                  {!isMockMode
+                    ? 'The Spring Boot backend strictly enforces that an after-resolution evidence image must be uploaded before marking a complaint as RESOLVED.'
+                    : 'Attach an after-resolution photo to verify completion of municipal work.'}
+                </p>
+
+                <div>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handleResolutionFileChange}
+                    className="w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-700 cursor-pointer"
+                  />
+                </div>
+
+                {resolutionPreview ? (
+                  <div className="mt-2 rounded-lg border border-emerald-300 overflow-hidden max-h-36">
+                    <img src={resolutionPreview} alt="Resolution preview" className="h-36 w-full object-cover" />
+                  </div>
+                ) : complaint.evidence.some((e) => e.phase === 'after' && e.url) ? (
+                  <p className="text-xs text-emerald-700 font-medium">
+                    ✓ Existing after-resolution evidence is already attached to this record.
+                  </p>
+                ) : !isMockMode ? (
+                  <p className="text-[11px] text-amber-700 font-semibold flex items-center gap-1">
+                    <AlertTriangle size={13} /> Photo upload is required to enable confirmation.
+                  </p>
+                ) : null}
+              </div>
+            )}
+
+            {uploadStep && (
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-govblue-800 flex items-center gap-2">
+                <Spinner size={14} />
+                <span className="font-medium">{uploadStep}</span>
+              </div>
+            )}
+
+            {statusError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-start gap-2">
+                <AlertCircle size={15} className="shrink-0 mt-0.5 text-red-600" />
+                <div className="flex-1">
+                  <p className="font-semibold">Update Failed</p>
+                  <p>{statusError}</p>
+                </div>
               </div>
             )}
 
@@ -843,17 +976,27 @@ export function ComplaintDetailPage() {
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
-              <Button variant="secondary" size="sm" onClick={() => setShowStatusModal(false)}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setShowStatusModal(false);
+                  setStatusError(null);
+                  setUploadStep(null);
+                }}
+              >
                 Cancel
               </Button>
               <Button
                 variant="primary"
                 size="sm"
                 isLoading={statusMutation.isPending}
+                disabled={statusMutation.isPending || (targetStatus === 'Resolved' && !hasResolutionProof)}
                 onClick={() =>
                   statusMutation.mutate({
                     status: targetStatus,
                     note: statusNote || `Status updated to ${targetStatus}`,
+                    file: resolutionFile,
                   })
                 }
               >

@@ -84,9 +84,10 @@ function haversineKm(
 const MAX_DISTANCE_KM = 1.0;
 
 function locationSimilarity(
-  lat1: number, lng1: number,
-  lat2: number, lng2: number,
+  lat1: number | null | undefined, lng1: number | null | undefined,
+  lat2: number | null | undefined, lng2: number | null | undefined,
 ): number {
+  if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return 0;
   const dist = haversineKm(lat1, lng1, lat2, lng2);
   return Math.max(0, 1 - dist / MAX_DISTANCE_KM);
 }
@@ -173,7 +174,11 @@ export function findDuplicates(
       if (breakdown.textScore >= 0.4) {
         reasons.push(`Text similarity ${Math.round(breakdown.textScore * 100)}%`);
       }
-      if (breakdown.locationScore >= 0.5) {
+      if (
+        breakdown.locationScore >= 0.5 &&
+        complaint.location.lat != null && complaint.location.lng != null &&
+        candidate.location.lat != null && candidate.location.lng != null
+      ) {
         const distM = Math.round(
           haversineKm(
             complaint.location.lat, complaint.location.lng,

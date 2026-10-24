@@ -57,7 +57,26 @@ npm run dev
 ```
 Open your browser at `http://localhost:5173`.
 
-### 3. Build for Production
+### 3. Configure Google Maps (Optional for Live Tiles)
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
+```
+Open `.env` and add your Google Maps API key:
+```env
+VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+```
+
+#### 🛡️ Google Cloud API Key Configuration & Restrictions:
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/).
+2. Navigate to **APIs & Services** > **Library** and enable the **Maps JavaScript API**.
+3. Under **Credentials**, create an API Key.
+4. **Best Practice Restrictions (Recommended)**:
+   - **Application Restrictions**: Set to **Websites (HTTP referrers)**. For local development, add `http://localhost:*` and `http://127.0.0.1:*`. For production, add your authorized production domain (e.g. `https://your-domain.gov/*`).
+   - **API Restrictions**: Under "Restrict key", select **Maps JavaScript API** exclusively. This prevents unauthorized use of other Google Cloud services if the frontend key is intercepted.
+5. *Note: If no API key is configured, CivicSense will gracefully render an informative fallback banner and an interactive geographic cluster inspector without crashing or failing the build.*
+
+### 4. Build for Production
 ```bash
 npm run build
 npm run preview
@@ -78,45 +97,46 @@ npm run preview
 
 ---
 
-## 🔌 How to Swap in a Real REST Backend
+## 🔌 Spring Boot Backend Integration
 
-All API operations are isolated in `src/lib/api.ts`. Currently, they simulate asynchronous REST endpoints with realistic delays and in-memory persistence seeded with 40 realistic civic complaints.
+The frontend connects directly to the **CivicSense Spring Boot REST API** documented in `API_ENDPOINTS.md`.
 
-To connect a live backend (e.g. Express, Fastify, Django, Spring Boot, or Supabase), simply update `src/lib/api.ts`:
+### Environment Configuration (`.env`)
 
-### Example: Replacing `getComplaints()`
-```typescript
-// Replace in src/lib/api.ts:
-export async function getComplaints(filters: ComplaintFilters = {}): Promise<Complaint[]> {
-  const params = new URLSearchParams();
-  if (filters.category) params.set('category', filters.category);
-  if (filters.status) params.set('status', filters.status);
-  if (filters.department) params.set('department', filters.department);
-  if (filters.search) params.set('q', filters.search);
-
-  const response = await fetch(`/api/v1/complaints?${params.toString()}`);
-  if (!response.ok) throw new Error('Failed to fetch complaints');
-  return response.json();
-}
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
 ```
 
-### Example: Replacing `updateComplaintStatus()`
-```typescript
-export async function updateComplaintStatus(
-  id: string,
-  newStatus: ComplaintStatus,
-  changedBy: string,
-  note?: string
-): Promise<Complaint> {
-  const response = await fetch(`/api/v1/complaints/${id}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: newStatus, changedBy, note }),
-  });
-  if (!response.ok) throw new Error('Failed to update status');
-  return response.json();
-}
-```
+| Variable | Default Value | Description |
+|---|---|---|
+| `VITE_API_BASE_URL` | `http://localhost:8080` | Base URL of the Spring Boot REST backend |
+| `VITE_USE_MOCK_API` | `false` | Set to `false` for live backend; `true` for offline mock dataset |
+| `VITE_GOOGLE_MAPS_API_KEY` | *(optional)* | Google Maps JavaScript API key for live satellite/street map tiles |
+
+### 🚀 Dual-Mode Operation
+
+- **Live Backend Mode (`VITE_USE_MOCK_API=false`, Default)**:
+  - Connects to Spring Boot backend endpoints.
+  - Authenticates via `POST /api/auth/login` and receives Bearer JWT.
+  - Queries paginated complaints via `GET /api/complaints`.
+  - Normalizes numeric backend IDs, geographic coordinates, and parent/duplicate relationships.
+  - Direct S3 Presigned Upload: Resolution requires uploading verification proof via `POST /api/uploads/presigned-url` and binary stream PUT before marking tickets as `RESOLVED`.
+  - Disables unsupported client operations (manual department reassignment & manual duplicate merging) with clear explanations, respecting the backend's automated intake engine.
+  - Displays inline retry banners when backend is offline or network fails (does not silently swap to fake data).
+
+- **Mock Simulator Mode (`VITE_USE_MOCK_API=true`)**:
+  - Uses the bundled dataset (`src/data/complaints.ts` and `src/data/users.ts`) for offline presentations and development when no Spring Boot instance is running.
+
+### 🔑 Authentication Credentials
+
+- **Live Spring Boot Backend**:
+  - Administrator: `admin@example.com` / `password`
+  - Field Worker: `worker@example.com` / `password`
+- **Mock Simulator Mode**:
+  - Super Admin: `priya.sharma@civicsense.gov` / `admin123`
+  - Dept Officer (Sanitation): `rahul.mehta@civicsense.gov` / `officer123`
+  - Field Agent: `suresh.kumar@civicsense.gov` / `agent123`
 
 ---
 

@@ -20,15 +20,33 @@ export function ReportsPage() {
   const [selectedDept, setSelectedDept] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
 
-  const { data: complaints = [], isLoading: isLoadingComplaints } = useQuery({
+  const {
+    data: complaints = [],
+    isLoading: isLoadingComplaints,
+    isError: isComplaintsError,
+    error: complaintsError,
+    refetch: refetchComplaints,
+  } = useQuery({
     queryKey: ['complaints'],
     queryFn: () => getComplaints(),
   });
 
-  const { data: analytics, isLoading: isLoadingAnalytics } = useQuery({
+  const {
+    data: analytics,
+    isLoading: isLoadingAnalytics,
+    isError: isAnalyticsError,
+    error: analyticsError,
+    refetch: refetchAnalytics,
+  } = useQuery({
     queryKey: ['analytics'],
     queryFn: () => getAnalytics(),
   });
+
+  const isError = isComplaintsError || isAnalyticsError;
+  const errorMessage =
+    (complaintsError as Error)?.message ||
+    (analyticsError as Error)?.message ||
+    'Unable to load analytics data from server.';
 
   // Filter complaints for report table & export
   const filteredData = useMemo(() => {
@@ -69,8 +87,8 @@ export function ReportsPage() {
       `"${c.assignedDepartment || 'Unassigned'}"`,
       `"${c.assignedOfficer || 'Unassigned'}"`,
       `"${c.location.address.replace(/"/g, '""')}"`,
-      c.location.lat,
-      c.location.lng,
+      c.location.lat !== null && c.location.lat !== undefined ? c.location.lat : '',
+      c.location.lng !== null && c.location.lng !== undefined ? c.location.lng : '',
       c.reportedAt,
       c.dueDate,
       `"${c.duplicateOf || ''}"`,
@@ -94,6 +112,30 @@ export function ReportsPage() {
   };
 
   const isLoading = isLoadingComplaints || isLoadingAnalytics;
+
+  if (isError) {
+    return (
+      <div className="py-20 flex flex-col items-center justify-center text-center max-w-md mx-auto px-4">
+        <AlertTriangle className="text-amber-500 mb-3" size={40} />
+        <h2 className="text-lg font-bold text-slate-800">Backend Server Unavailable</h2>
+        <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+          {errorMessage}
+        </p>
+        <Button
+          size="sm"
+          variant="primary"
+          className="mt-4"
+          onClick={() => {
+            refetchComplaints();
+            refetchAnalytics();
+          }}
+          leftIcon={<RefreshCw size={13} />}
+        >
+          Retry Connection
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -1,12 +1,13 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Search, Filter, ArrowUpDown, ChevronDown, CheckSquare, Square,
   Eye, RefreshCw, X, AlertTriangle, Users, Tag, CheckCircle2,
-  Calendar, Layers, MapPin, Building2, SlidersHorizontal, AlertCircle
+  Calendar, Layers, MapPin, Building2, SlidersHorizontal, AlertCircle,
+  Clock, CheckCheck
 } from 'lucide-react';
-import { getComplaints, bulkUpdateStatus, bulkAssign, getUsers } from '../lib/api';
+import { getComplaints, bulkUpdateStatus, bulkAssign, getUsers, isMockMode } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardHeader, CardBody, Button, Input, Select, Spinner } from '../components/ui';
 import { StatusBadge, PriorityBadge, OverdueBadge, CategoryBadge } from '../components/ui/Badge';
@@ -47,20 +48,53 @@ const DEPARTMENTS: Department[] = [
 
 export function ComplaintsListPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  // Filters state
-  const [search, setSearch] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
-  const [selectedStatus, setSelectedStatus] = useState<string>('');
-  const [selectedDepartment, setSelectedDepartment] = useState<string>(
-    user?.role === 'Department Officer' && user.department ? user.department : ''
-  );
-  const [selectedPriority, setSelectedPriority] = useState<string>('');
+  // Read URL search params
+  const paramCategory = searchParams.get('category') || '';
+  const paramStatus = searchParams.get('status') || '';
+  const paramDepartment = searchParams.get('department') || '';
+  const paramPriority = searchParams.get('priority') || '';
+  const paramSearch = searchParams.get('q') || searchParams.get('search') || '';
+  const paramOverdue = searchParams.get('overdue') === 'true' || searchParams.get('filter') === 'overdue';
+  const paramResolvedThisWeek = searchParams.get('filter') === 'resolvedThisWeek';
+
+  // Filters state initialized from URL
+  const [search, setSearch] = useState(paramSearch);
+  const [selectedCategory, setSelectedCategory] = useState<string>(paramCategory);
+  const [selectedStatus, setSelectedStatus] = useState<string>(paramStatus);
+  const [selectedDepartment, setSelectedDepartment] = useState<string>(paramDepartment);
+  const [selectedPriority, setSelectedPriority] = useState<string>(paramPriority);
+  const [isOverdueOnly, setIsOverdueOnly] = useState<boolean>(paramOverdue);
+  const [isResolvedThisWeekOnly, setIsResolvedThisWeekOnly] = useState<boolean>(paramResolvedThisWeek);
   const [sortBy, setSortBy] = useState<'date-desc' | 'date-asc' | 'priority-desc' | 'due-asc'>('date-desc');
-  const [scopeToMyDept, setScopeToMyDept] = useState<boolean>(
-    user?.role === 'Department Officer' || user?.role === 'Field Agent'
-  );
+  const [scopeToMyDept, setScopeToMyDept] = useState<boolean>(false);
+
+  // Sync state when URL params change (e.g. back/forward button)
+  useEffect(() => {
+    setSelectedCategory(searchParams.get('category') || '');
+    setSelectedStatus(searchParams.get('status') || '');
+    setSelectedDepartment(searchParams.get('department') || '');
+    setSelectedPriority(searchParams.get('priority') || '');
+    setSearch(searchParams.get('q') || searchParams.get('search') || '');
+    setIsOverdueOnly(searchParams.get('overdue') === 'true' || searchParams.get('filter') === 'overdue');
+    setIsResolvedThisWeekOnly(searchParams.get('filter') === 'resolvedThisWeek');
+  }, [searchParams]);
+
+  // Helper to sync local filter change to URL
+  const updateQueryParam = (updates: Record<string, string | null>) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, val] of Object.entries(updates)) {
+      if (val !== null && val !== '') {
+        next.set(key, val);
+      } else {
+        next.delete(key);
+      }
+    }
+    setSearchParams(next, { replace: true });
+  };
 
   // Selection for bulk actions
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -82,10 +116,23 @@ export function ComplaintsListPage() {
     return users.filter((u) => u.department === bulkAssignDept);
   }, [users, bulkAssignDept]);
 
-  // Query complaints
-  const { data: complaints = [], isLoading, isRefetching } = useQuery({
-    queryKey: ['complaints'],
-    queryFn: () => getComplaints(),
+  // Query complaints with backend parameters and error tracking
+  const {
+    data: complaints = [],
+    isLoading,
+    isRefetching,
+    isError,
+    error: complaintsError,
+    refetch,
+  } = useQuery({
+    queryKey: ['complaints', selectedCategory, selectedStatus, selectedDepartment, search],
+    queryFn: () =>
+      getComplaints({
+        category: selectedCategory as any,
+        status: selectedStatus as any,
+        department: selectedDepartment as any,
+        search,
+      }),
   });
 
   // Bulk status mutation
@@ -118,6 +165,10 @@ export function ComplaintsListPage() {
 
   // Filtered & sorted complaints
   const filteredComplaints = useMemo(() => {
+    const now = new Date();
+    const oneWeekAgo = new Date(now);
+    oneWeekAgo.setDate(now.getDate() - 7);
+
     return complaints.filter((c) => {
       if (scopeToMyDept && user?.department && c.assignedDepartment !== user.department) {
         return false;
@@ -127,13 +178,46 @@ export function ComplaintsListPage() {
         const matchesId = c.id.toLowerCase().includes(q);
         const matchesTitle = c.title.toLowerCase().includes(q);
         const matchesDesc = c.description.toLowerCase().includes(q);
-        const matchesAddress = c.location.address.toLowerCase().includes(q);
+        const matchesAddress = c.location?.address ? c.location.address.toLowerCase().includes(q) : false;
         if (!matchesId && !matchesTitle && !matchesDesc && !matchesAddress) return false;
       }
       if (selectedCategory && c.category !== selectedCategory) return false;
-      if (selectedStatus && c.status !== selectedStatus) return false;
-      if (selectedDepartment && c.assignedDepartment !== selectedDepartment) return false;
+
+      // Status filtering with group support
+      if (selectedStatus) {
+        if (selectedStatus.toLowerCase() === 'open') {
+          if (c.status !== 'New' && c.status !== 'Acknowledged') return false;
+        } else if (selectedStatus.toLowerCase() === 'in-progress') {
+          if (c.status !== 'Assigned' && c.status !== 'In Progress') return false;
+        } else if (selectedStatus.includes(',')) {
+          const list = selectedStatus.split(',').map((s) => s.trim());
+          if (!list.includes(c.status)) return false;
+        } else if (c.status !== selectedStatus) {
+          return false;
+        }
+      }
+
+      // Department filtering including Unassigned
+      if (selectedDepartment) {
+        if (selectedDepartment === 'Unassigned') {
+          if (c.assignedDepartment) return false;
+        } else if (c.assignedDepartment !== selectedDepartment) {
+          return false;
+        }
+      }
+
       if (selectedPriority && c.priority !== selectedPriority) return false;
+
+      if (isOverdueOnly) {
+        if (!isOverdue(c.dueDate, c.status)) return false;
+      }
+
+      if (isResolvedThisWeekOnly) {
+        const lastEntry = c.timeline[c.timeline.length - 1];
+        if (c.status !== 'Resolved') return false;
+        if (!lastEntry || new Date(lastEntry.changedAt) < oneWeekAgo) return false;
+      }
+
       return true;
     }).sort((a, b) => {
       if (sortBy === 'date-desc') {
@@ -151,7 +235,10 @@ export function ComplaintsListPage() {
       }
       return 0;
     });
-  }, [complaints, search, selectedCategory, selectedStatus, selectedDepartment, selectedPriority, sortBy, scopeToMyDept, user]);
+  }, [
+    complaints, search, selectedCategory, selectedStatus, selectedDepartment,
+    selectedPriority, isOverdueOnly, isResolvedThisWeekOnly, sortBy, scopeToMyDept, user
+  ]);
 
   const toggleSelectAll = () => {
     if (selectedIds.length === filteredComplaints.length) {
@@ -168,7 +255,7 @@ export function ComplaintsListPage() {
   };
 
   const hasActiveFilters = Boolean(
-    search || selectedCategory || selectedStatus || selectedDepartment || selectedPriority
+    search || selectedCategory || selectedStatus || selectedDepartment || selectedPriority || isOverdueOnly || isResolvedThisWeekOnly
   );
 
   const clearFilters = () => {
@@ -177,7 +264,62 @@ export function ComplaintsListPage() {
     setSelectedStatus('');
     setSelectedDepartment('');
     setSelectedPriority('');
+    setIsOverdueOnly(false);
+    setIsResolvedThisWeekOnly(false);
     setScopeToMyDept(false);
+    setSearchParams(new URLSearchParams(), { replace: true });
+  };
+
+  // Status Tab counts
+  const tabCounts = useMemo(() => {
+    return {
+      all: complaints.length,
+      open: complaints.filter((c) => c.status === 'New' || c.status === 'Acknowledged').length,
+      inProgress: complaints.filter((c) => c.status === 'Assigned' || c.status === 'In Progress').length,
+      resolved: complaints.filter((c) => c.status === 'Resolved').length,
+      overdue: complaints.filter((c) => isOverdue(c.dueDate, c.status)).length,
+      duplicate: complaints.filter((c) => c.status === 'Duplicate').length,
+      closed: complaints.filter((c) => c.status === 'Closed').length,
+      rejected: complaints.filter((c) => c.status === 'Rejected').length,
+    };
+  }, [complaints]);
+
+  // Current active status tab
+  const activeTabKey = useMemo(() => {
+    if (isOverdueOnly) return 'overdue';
+    if (!selectedStatus) return 'all';
+    const s = selectedStatus.toLowerCase();
+    if (s === 'open') return 'open';
+    if (s === 'in-progress') return 'inProgress';
+    if (s === 'resolved') return 'resolved';
+    if (s === 'duplicate') return 'duplicate';
+    if (s === 'closed') return 'closed';
+    if (s === 'rejected') return 'rejected';
+    return selectedStatus;
+  }, [selectedStatus, isOverdueOnly]);
+
+  const handleTabClick = (key: string) => {
+    if (key === 'all') {
+      setSelectedStatus('');
+      setIsOverdueOnly(false);
+      updateQueryParam({ status: null, overdue: null, filter: null });
+    } else if (key === 'open') {
+      setSelectedStatus('open');
+      setIsOverdueOnly(false);
+      updateQueryParam({ status: 'open', overdue: null, filter: null });
+    } else if (key === 'inProgress') {
+      setSelectedStatus('in-progress');
+      setIsOverdueOnly(false);
+      updateQueryParam({ status: 'in-progress', overdue: null, filter: null });
+    } else if (key === 'overdue') {
+      setSelectedStatus('');
+      setIsOverdueOnly(true);
+      updateQueryParam({ status: null, overdue: 'true', filter: null });
+    } else {
+      setSelectedStatus(key);
+      setIsOverdueOnly(false);
+      updateQueryParam({ status: key, overdue: null, filter: null });
+    }
   };
 
   return (
@@ -188,7 +330,7 @@ export function ComplaintsListPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Complaints Queue</h1>
             <span className="bg-govblue-50 text-govblue-700 font-semibold px-2.5 py-0.5 rounded-full text-xs border border-govblue-200">
-              {filteredComplaints.length} Total
+              {filteredComplaints.length} of {complaints.length} Records
             </span>
           </div>
           <p className="text-sm text-slate-500 mt-1">
@@ -221,6 +363,48 @@ export function ComplaintsListPage() {
         </div>
       </div>
 
+      {/* Quick Status Tabs */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+        {[
+          { key: 'all', label: 'All', count: tabCounts.all },
+          { key: 'open', label: 'Open / Pending', count: tabCounts.open },
+          { key: 'inProgress', label: 'In Progress', count: tabCounts.inProgress },
+          { key: 'resolved', label: 'Resolved', count: tabCounts.resolved },
+          { key: 'overdue', label: 'Overdue', count: tabCounts.overdue, isOverdue: true },
+          { key: 'duplicate', label: 'Duplicates', count: tabCounts.duplicate },
+          { key: 'closed', label: 'Closed', count: tabCounts.closed },
+          { key: 'rejected', label: 'Rejected', count: tabCounts.rejected },
+        ].map((tab) => {
+          const isActive = activeTabKey === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => handleTabClick(tab.key)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-2 border ${
+                isActive
+                  ? 'bg-govblue-600 text-white border-govblue-600 shadow-sm'
+                  : tab.isOverdue && tab.count > 0
+                  ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <span>{tab.label}</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                  isActive
+                    ? 'bg-white/20 text-white'
+                    : tab.isOverdue && tab.count > 0
+                    ? 'bg-red-200 text-red-800'
+                    : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Filter and Search Bar */}
       <Card>
         <CardBody className="p-4 space-y-4">
@@ -232,12 +416,18 @@ export function ComplaintsListPage() {
                 type="text"
                 placeholder="Search by ID, keyword, description, or address..."
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  updateQueryParam({ q: e.target.value });
+                }}
                 className="w-full pl-9 pr-8 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-govblue-500 transition-all placeholder:text-slate-400"
               />
               {search && (
                 <button
-                  onClick={() => setSearch('')}
+                  onClick={() => {
+                    setSearch('');
+                    updateQueryParam({ q: null });
+                  }}
                   className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                 >
                   <X size={14} />
@@ -269,8 +459,11 @@ export function ComplaintsListPage() {
               </label>
               <select
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500"
+                onChange={(e) => {
+                  setSelectedCategory(e.target.value);
+                  updateQueryParam({ category: e.target.value });
+                }}
+                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500 cursor-pointer"
               >
                 <option value="">All Categories</option>
                 {CATEGORIES.map((cat) => (
@@ -285,10 +478,16 @@ export function ComplaintsListPage() {
               </label>
               <select
                 value={selectedStatus}
-                onChange={(e) => setSelectedStatus(e.target.value)}
-                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500"
+                onChange={(e) => {
+                  setSelectedStatus(e.target.value);
+                  setIsOverdueOnly(false);
+                  updateQueryParam({ status: e.target.value, overdue: null });
+                }}
+                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500 cursor-pointer"
               >
                 <option value="">All Statuses</option>
+                <option value="open">Open / Pending (New + Ack)</option>
+                <option value="in-progress">In Progress (Assigned + Active)</option>
                 {STATUSES.map((st) => (
                   <option key={st} value={st}>{st}</option>
                 ))}
@@ -301,13 +500,17 @@ export function ComplaintsListPage() {
               </label>
               <select
                 value={selectedDepartment}
-                onChange={(e) => setSelectedDepartment(e.target.value)}
-                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500"
+                onChange={(e) => {
+                  setSelectedDepartment(e.target.value);
+                  updateQueryParam({ department: e.target.value });
+                }}
+                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500 cursor-pointer"
               >
                 <option value="">All Departments</option>
                 {DEPARTMENTS.map((dept) => (
                   <option key={dept} value={dept}>{dept}</option>
                 ))}
+                <option value="Unassigned">Unassigned</option>
               </select>
             </div>
 
@@ -317,8 +520,11 @@ export function ComplaintsListPage() {
               </label>
               <select
                 value={selectedPriority}
-                onChange={(e) => setSelectedPriority(e.target.value)}
-                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500"
+                onChange={(e) => {
+                  setSelectedPriority(e.target.value);
+                  updateQueryParam({ priority: e.target.value });
+                }}
+                className="w-full text-xs py-1.5 px-2.5 border border-slate-200 rounded-md bg-white text-slate-700 focus:ring-1 focus:ring-govblue-500 cursor-pointer"
               >
                 <option value="">All Priorities</option>
                 {PRIORITIES.map((p) => (
@@ -337,7 +543,7 @@ export function ComplaintsListPage() {
                 </button>
               ) : (
                 <div className="text-[11px] text-slate-400 py-1.5 flex items-center justify-center w-full">
-                  No active filters
+                  Showing all records
                 </div>
               )}
             </div>
@@ -345,7 +551,7 @@ export function ComplaintsListPage() {
         </CardBody>
       </Card>
 
-      {/* Bulk Action Toolbar (Floating when items are selected) */}
+      {/* Bulk Action Toolbar */}
       {selectedIds.length > 0 && (
         <div className="sticky top-20 z-20 bg-govblue-900 text-white p-3.5 rounded-xl shadow-xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-200 border border-govblue-700">
           <div className="flex items-center gap-3">
@@ -388,7 +594,24 @@ export function ComplaintsListPage() {
 
       {/* Complaints Table */}
       <Card className="overflow-hidden">
-        {isLoading ? (
+        {isError ? (
+          <div className="py-16 text-center max-w-md mx-auto px-4">
+            <AlertCircle className="mx-auto text-red-500 mb-3" size={36} />
+            <h3 className="text-base font-bold text-slate-800">Failed to Retrieve Complaints</h3>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              {(complaintsError as Error)?.message || 'Unable to connect to the backend server. Please verify Spring Boot is active.'}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-4"
+              onClick={() => refetch()}
+              leftIcon={<RefreshCw size={13} className={isRefetching ? 'animate-spin' : ''} />}
+            >
+              Retry Connection
+            </Button>
+          </div>
+        ) : isLoading ? (
           <div className="py-20 flex flex-col items-center justify-center text-slate-400">
             <Spinner size="lg" />
             <p className="mt-3 text-sm font-medium">Loading complaints queue...</p>
@@ -445,12 +668,13 @@ export function ComplaintsListPage() {
                   return (
                     <tr
                       key={c.id}
-                      className={`hover:bg-slate-50/70 transition-colors ${
+                      onClick={() => navigate(`/complaints/${c.id}`)}
+                      className={`hover:bg-blue-50/30 transition-colors cursor-pointer ${
                         isSelected ? 'bg-blue-50/50' : ''
                       }`}
                     >
                       {/* Checkbox */}
-                      <td className="py-3.5 px-4">
+                      <td className="py-3.5 px-4" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => toggleSelectOne(c.id)}
                           className="text-slate-400 hover:text-slate-700 flex items-center"
@@ -466,12 +690,9 @@ export function ComplaintsListPage() {
                       {/* Complaint ID & Title */}
                       <td className="py-3.5 px-3 max-w-xs">
                         <div className="flex items-center gap-2">
-                          <Link
-                            to={`/complaints/${c.id}`}
-                            className="font-mono text-xs font-bold text-govblue-600 hover:underline"
-                          >
+                          <span className="font-mono text-xs font-bold text-govblue-600">
                             {c.id}
-                          </Link>
+                          </span>
                           {isDup && (
                             <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium border border-purple-200">
                               Duplicate of {c.duplicateOf}
@@ -483,15 +704,12 @@ export function ComplaintsListPage() {
                             </span>
                           )}
                         </div>
-                        <Link
-                          to={`/complaints/${c.id}`}
-                          className="font-semibold text-slate-800 hover:text-govblue-600 line-clamp-1 mt-0.5"
-                        >
+                        <div className="font-semibold text-slate-800 hover:text-govblue-600 line-clamp-1 mt-0.5">
                           {c.title}
-                        </Link>
+                        </div>
                         <div className="flex items-center gap-1 text-slate-400 text-xs mt-0.5 line-clamp-1">
                           <MapPin size={11} className="shrink-0 text-slate-400" />
-                          <span className="truncate">{c.location.address}</span>
+                          <span className="truncate">{c.location?.address || 'Location pending'}</span>
                         </div>
                       </td>
 
@@ -544,7 +762,7 @@ export function ComplaintsListPage() {
                       </td>
 
                       {/* Action */}
-                      <td className="py-3.5 px-4 text-right">
+                      <td className="py-3.5 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                         <Link to={`/complaints/${c.id}`}>
                           <Button size="sm" variant="outline" className="h-8 px-2.5 text-xs">
                             <Eye size={13} className="mr-1" /> View
