@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@theme {
+  --color-govblue-50: #f0f6fe;
+  --color-govblue-100: #dbeafe;
+  --color-govblue-200: #bfdbfe;
+  --color-govblue-300: #93c5fd;
+  --color-govblue-400: #60a5fa;
+  --color-govblue-500: #2563eb;
+  --color-govblue-600: #1d4ed8;
+  --color-govblue-700: #1e40af;
+  --color-govblue-800: #1e3a8a;
+  --color-govblue-900: #0f172a;
+  --color-govblue-950: #090e1a;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans antialiased selection:bg-blue-100 selection:text-blue-900 min-h-screen;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+}
+
+/* Custom scrollbars for data tables and logs */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
